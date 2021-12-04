@@ -30,6 +30,7 @@ struct PlaneMesh {
 	unsigned int vao;
 	unsigned int vbo;
 	unsigned int texture;
+	unsigned int texture2;
 	unsigned int vertices;
 	unsigned int planeNumIndices;
 	unsigned int planeIndexByteOffset;
@@ -55,6 +56,14 @@ struct SphereMesh {
 	unsigned int sphereNumIndices;
 };
 
+// Cube Structure for VAO,VBO
+struct CubeMesh {
+	unsigned int vao;
+	unsigned int vbo;
+	unsigned int texture;
+	unsigned int vertices;
+};
+
 // User Utility Functions
 void windowResize(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow* window);
@@ -66,6 +75,12 @@ bool initializeWindow(GLFWwindow** window);
 void planeMeshCreation(PlaneMesh& mesh, int planeDimension);
 void planeMeshDeletion(PlaneMesh& mesh);
 void planeRender(PlaneMesh& mesh, unsigned int& shader, glm::mat4 MVP);
+
+// Cube
+void containerMeshCreation(CubeMesh& mesh);
+void cubeMeshCreation(CubeMesh& mesh);
+void cubeMeshDeletion(CubeMesh& mesh);
+void cubeRender(CubeMesh& mesh, unsigned int& shader, glm::mat4 MVP);
 
 // Cylinder 
 void cylinderMeshCreation(CylinderMesh& mesh); // Create Cylinder vertices
@@ -88,7 +103,7 @@ void scrollMouseWheel(GLFWwindow* window, double xoffset, double yoffset);
 // Globala Variables/Constants
 const unsigned int WINDOW_WIDTH = 1400;
 const unsigned int WINDOW_HEIGHT = 1000;
-const char* WINDOW_TITLE = "Datt Patel Milestone 5";
+const char* WINDOW_TITLE = "Datt Patel Milestone 6";
 
 static bool perspectiveVal = true; // For switching perspectives
 
@@ -108,31 +123,86 @@ float lastFrame = 0.0f;
 // Global Variables
 // General Shaders
 const char* vertexShader = "#version 330 core\n"
-"layout(location = 0) in vec3 aPos; \n"
-"layout (location = 1) in vec2 textureCoords; \n"
+"layout (location = 0) in vec3 aPos;\n"
+"layout (location = 1) in vec2 textureCoords;\n"
+"layout (location = 2) in vec3 aNormal;\n"
+"out vec3 Normal;\n"
+"out vec3 FragPos;\n"
+"uniform mat4 model;\n"
 "uniform mat4 MVP;\n"
 "out vec2 textCoord;\n"
 "void main()\n"
 "{\n"
+"   FragPos = vec3(model * vec4(aPos, 1.0));\n"
+"   Normal = mat3(transpose(inverse(model))) * aNormal;;\n"
 "	gl_Position = MVP * vec4(aPos, 1.0f); \n"
 "	textCoord = textureCoords;\n"
 "}\0";
 
 const char* fragmentShader = "#version 330 core\n"
 "out vec4 FragColor; \n"
+"in vec3 FragPos;\n"
+"in vec3 Normal;\n"
 "uniform vec4 ourColor; \n"
 "in vec2 textCoord;"
-"uniform sampler2D textureSampler;\n"
+"struct LightSource {\n"
+"    vec3 position;\n"
+"    vec3 ambientStr;\n"
+"    vec3 specular;\n"
+"	 vec3 diffuse;\n"
+"	 float constant;\n"
+"    float linear;\n"
+"    float quadratic;\n"
+"};\n"
+"uniform float shininess;\n"
+"uniform vec3 viewPosition;\n"
+"uniform sampler2D diffuseTexture;\n"
+"uniform sampler2D specularTexture;\n"
+"uniform vec2 uvScale;\n"
+"uniform LightSource light1;\n"
 "void main() {\n"
-"	FragColor = texture(textureSampler, textCoord); \n"
+"vec3 norm = normalize(Normal);\n"
+"vec3 viewDir = normalize(viewPosition - FragPos);\n"
+"vec3 ambient1 = light1.ambientStr * texture(diffuseTexture, textCoord * uvScale).rgb;\n"
+"vec3 lightDir1 = normalize(light1.position - FragPos);\n"
+"float diff1 = max(dot(norm, lightDir1), 0.0);\n"
+"vec3 diffuse1 = light1.diffuse * diff1 * texture(diffuseTexture, textCoord * uvScale).rgb;\n"
+"vec3 reflectDir1 = reflect(-lightDir1, norm);\n"
+"float specularComponent1 = pow(max(dot(viewDir, reflectDir1), 0.0), shininess);\n"
+"vec3 specular1 = light1.specular * specularComponent1 * texture(specularTexture, textCoord * uvScale).rgb;\n"
+"float distance = length(light1.position - FragPos);\n"
+"float attenuation = 1.0 / (light1.constant + light1.linear * distance + light1.quadratic * (distance * distance));\n"
+"vec3 phong = ((ambient1*attenuation) + (diffuse1*attenuation) + (specular1*attenuation));\n"
+"FragColor = vec4(phong, 1.0);\n"
+"}\0";
+
+// Light Shaders
+const char* lightVertexShader = "#version 330 core\n"
+"layout(location = 0) in vec3 aPos;\n"
+"uniform mat4 MVP;\n"
+"void main()\n"
+"{\n"
+"    gl_Position = MVP * vec4(aPos, 1.0);\n"
+"}\0";
+
+const char* lightFragmentShader = "#version 330 core\n"
+"out vec4 FragColor;\n"
+"void main()\n"
+"{\n"
+"    FragColor = vec4(1.0);\n"
 "}\0";
 
 // Plane variables
 const uint NUM_FLOATS_PER_VERTICE = 9;
 const uint VERTEX_BYTE_SIZE = NUM_FLOATS_PER_VERTICE * sizeof(float);
 
+float xLight = -0.74f;
+float yLight = 0.66f;
+float zLight = 1.12f;
+
 // Shader programs
 unsigned int shaderProgram;
+unsigned int lightShader;
 
 int main()
 {
@@ -146,9 +216,20 @@ int main()
 		std::cout << "Failure in Plane shader creation/compilation/linking." << std::endl;
 		return -1;
 	}
+	if (!createShaders(lightVertexShader, lightFragmentShader, lightShader)) {
+		std::cout << "Failure in Light shader creation/compilation/linking." << std::endl;
+		return -1;
+	}
 
 	// Mesh for plane
 	PlaneMesh planeMesh;
+	PlaneMesh lightWindow;
+
+	// Cube Mesh
+	CubeMesh container;
+	CubeMesh containerBump;
+	CubeMesh lidBottom;
+	CubeMesh lidTop;
 
 	// Create the Cylinder Mesh and Colors
 	CylinderMesh cylinderMesh;
@@ -166,12 +247,22 @@ int main()
 
 	// Creating the objects
 	planeMeshCreation(planeMesh, 4);
-	Torus aTorus = torusMeshCreation(torusMesh, 0.03f, 0.055f);
+	planeMeshCreation(lightWindow, 2);
+	containerMeshCreation(container);
+	cubeMeshCreation(containerBump);
+	cubeMeshCreation(lidBottom);
+	cubeMeshCreation(lidTop);
+	Torus aTorus = torusMeshCreation(torusMesh, 0.03f, 0.055f); // FIXME: Torus = No way there is no normal one only UV
 	auto cylinder1 = static_meshes_3D::Cylinder(0.15f, 30.0f, 0.5f, true, true, true);
 	auto cylinder2 = static_meshes_3D::Cylinder(0.01f, 30.0f, 0.1f, true, true, true);
 
 	// Binding Textures to meshes
 	planeMesh.texture = loadTexture("images/table.jpg");
+	planeMesh.texture2 = loadTexture("images/tableDark.jpg");
+	lidTop.texture = loadTexture("images/lid.jpg");
+	lidBottom.texture = loadTexture("images/lid.jpg");
+	container.texture = loadTexture("images/container.jpg");
+	containerBump.texture = loadTexture("images/container.jpg");
 	cylinderMesh.texture = loadTexture("images/candleEdit.jpg");
 	cylinderTwoMesh.texture = loadTexture("images/candleLit.jpg");
 	torusMesh.texture = loadTexture("images/CandleTop.jpg");
@@ -201,14 +292,13 @@ int main()
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		// Activate shader
-		glUseProgram(shaderProgram);
-		glUniform1i(glGetUniformLocation(shaderProgram, "textureSampler"), 0);
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, planeMesh.texture);
+		// Light Shader
+		glUseProgram(lightShader);
 
 		glm::mat4 model = glm::mat4(1.0f);// Model
-		model = glm::translate(model, glm::vec3(-0.38f, -0.26f, -0.3f)); 
+		model = glm::translate(model, glm::vec3(xLight, yLight, zLight));
+		model = glm::scale(model, glm::vec3(0.6f, 0.5f, 0.6f));
+		model = glm::rotate(model, glm::radians(45.0f), glm::vec3(0.5f, 0.0f, 0.0f));
 		glm::mat4 view = camera.GetViewMatrix(); // View
 		glm::mat4 projection = glm::mat4(1.0f); // Projection
 		if (perspectiveVal) {
@@ -216,52 +306,135 @@ int main()
 		}
 		else {
 			float scale = 350.0f;
-			projection = glm::ortho(-((float)WINDOW_WIDTH)/scale, ((float)WINDOW_WIDTH)/scale, -((float)WINDOW_HEIGHT)/scale, ((float)WINDOW_HEIGHT)/scale, 2.0f, 10.0f);
+			projection = glm::ortho(-((float)WINDOW_WIDTH) / scale, ((float)WINDOW_WIDTH) / scale, -((float)WINDOW_HEIGHT) / scale, ((float)WINDOW_HEIGHT) / scale, 2.0f, 10.0f);
 		}
 		glm::mat4 MVP = projection * view * model;// Calculate MVP
+
+		// Light
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+		planeRender(lightWindow, lightShader, MVP);
+
+		// Activate shader
+		glUseProgram(shaderProgram);
+
+		glm::vec2 gUVScale(2.0f, 2.0f);
+		glUniform2fv(glGetUniformLocation(shaderProgram, "uvScale"), 1, glm::value_ptr(gUVScale));
+		glUniform3fv(glGetUniformLocation(shaderProgram, "viewPos"), 1, glm::value_ptr(camera.Position));
+
+		// Various Spotlight light info
+		glUniform1f(glGetUniformLocation(shaderProgram, "shininess"), 32.0f);
+		glUniform3f(glGetUniformLocation(shaderProgram, "light1.position"),xLight, yLight, zLight);
+		glUniform3f(glGetUniformLocation(shaderProgram, "light1.ambientStr"), 0.8f, 0.8f, 0.8f);
+		glUniform3f(glGetUniformLocation(shaderProgram, "light1.diffuse"), 0.6f, 0.6f, 0.6f);
+		glUniform3f(glGetUniformLocation(shaderProgram, "light1.specular"), 1.0f, 1.0f, 1.0f);
+		glUniform1f(glGetUniformLocation(shaderProgram, "light1.constant"), 1.0f);
+		glUniform1f(glGetUniformLocation(shaderProgram, "light1.linear"), 0.09f);
+		glUniform1f(glGetUniformLocation(shaderProgram, "light1.quadratic"), 0.032f);
+
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 0);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, planeMesh.texture);
+
+		glUniform1i(glGetUniformLocation(shaderProgram, "specularTexture"), 1);
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(GL_TEXTURE_2D, planeMesh.texture2);
+
+		model = glm::mat4(1.0f);// Model
+		model = glm::translate(model, glm::vec3(-0.38f, -0.26f, -0.3f)); 
+		MVP = projection * view * model;// Calculate MVP
 		
 		// Plane
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 		planeRender(planeMesh, shaderProgram, MVP);
 
+		// Container Render
+		// Container Lid Top
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 2);
+		glActiveTexture(GL_TEXTURE2);
+		glBindTexture(GL_TEXTURE_2D, lidTop.texture);
+		glm::vec3 lidTopPos = glm::vec3(-1.2f, 0.41f, -0.6f);
+		model = glm::mat4(1.0f);// Model
+		model = glm::translate(model, lidTopPos);
+		model = glm::scale(model, glm::vec3(0.6f, 0.05f, 0.6f));
+		MVP = projection * view * model;// Calculate MVP
+		cubeRender(lidTop, shaderProgram, MVP);
+
+		// Container Lid Bottom
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 3);
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(GL_TEXTURE_2D, lidBottom.texture);
+		glm::vec3 lidBottomPos = glm::vec3(lidTopPos.x, lidTopPos.y - 0.02f, lidTopPos.z);
+		model = glm::mat4(1.0f);// Model
+		model = glm::translate(model, lidBottomPos);
+		model = glm::scale(model, glm::vec3(0.65f, 0.05f, 0.65f));
+		MVP = projection * view * model;// Calculate MVP
+		cubeRender(lidBottom, shaderProgram, MVP);
+		
+		// Container Bump
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 4);
+		glActiveTexture(GL_TEXTURE4);
+		glBindTexture(GL_TEXTURE_2D, containerBump.texture);
+		glm::vec3 containerBumpPos = glm::vec3(lidBottomPos.x, lidBottomPos.y - 0.02f, lidBottomPos.z);
+		model = glm::mat4(1.0f);// Model
+		model = glm::translate(model, containerBumpPos);
+		model = glm::scale(model, glm::vec3(0.7f, 0.05f, 0.7f));
+		MVP = projection * view * model;// Calculate MVP
+		cubeRender(containerBump, shaderProgram, MVP);
+
+		// Container
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 5);
+		glActiveTexture(GL_TEXTURE5);
+		glBindTexture(GL_TEXTURE_2D, container.texture);
+		model = glm::mat4(1.0f);// Model
+		glm::vec3 conatinerPos = glm::vec3(containerBumpPos.x, containerBumpPos.y - 0.3, containerBumpPos.z);
+		model = glm::translate(model, conatinerPos);
+		model = glm::scale(model, glm::vec3(0.48f, 0.65f, 0.55f));
+		MVP = projection * view * model;// Calculate MVP
+		cubeRender(container, shaderProgram, MVP);
+
 		// Cylinder Model (candel body)
-		glUniform1i(glGetUniformLocation(shaderProgram, "textureSampler"), 1);
-		glActiveTexture(GL_TEXTURE1);
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 6);
+		glActiveTexture(GL_TEXTURE6);
 		glBindTexture(GL_TEXTURE_2D, cylinderMesh.texture);
 		model = glm::mat4(1.0f);
 		model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
 		MVP = projection * view * model;
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 		cylinderRender(cylinder1, cylinderMesh, shaderProgram, MVP); // Renders Cylinder
 
 		// Cylinder two (wix)
-		glUniform1i(glGetUniformLocation(shaderProgram, "textureSampler"), 2);
-		glActiveTexture(GL_TEXTURE2);
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 7);
+		glActiveTexture(GL_TEXTURE7);
 		glBindTexture(GL_TEXTURE_2D, cylinderTwoMesh.texture);
 		model = glm::mat4(1.0f);
 		model = glm::translate(model, glm::vec3(0.0f, 0.23f, 0.0f));
 		MVP = projection * view * model;
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 		cylinderRender(cylinder2, cylinderTwoMesh, shaderProgram, MVP); // Renders Cylinder
 
 		// Torus model (candel bump)
-		glUniform1i(glGetUniformLocation(shaderProgram, "textureSampler"), 3);
-		glActiveTexture(GL_TEXTURE3);
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 8);
+		glActiveTexture(GL_TEXTURE8);
 		glBindTexture(GL_TEXTURE_2D, torusMesh.texture);
 		model = glm::mat4(1.0f);
 		model = glm::scale(model, glm::vec3(0.88f, 0.45f, 0.88f));
 		model = glm::translate(model, glm::vec3(0.0f, 0.55f, 0.0f)); // Translate the torus above cylinder 
 		model = glm::rotate(model, glm::radians(90.f), glm::vec3(1.0f, 0.0f, 0.0f)); // Rotate the torus by 90 degrees		
 		MVP = projection * view * model;
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 		torusRender(torusMesh, shaderProgram, MVP); // Render Torus
 
 		// Sphere (basketball)
-		glUniform1i(glGetUniformLocation(shaderProgram, "textureSampler"), 4);
-		glActiveTexture(GL_TEXTURE4);
+		glUniform1i(glGetUniformLocation(shaderProgram, "diffuseTexture"), 9);
+		glActiveTexture(GL_TEXTURE9);
 		glBindTexture(GL_TEXTURE_2D, sphereText);
 		model = glm::mat4(1.0f);
 		model = glm::scale(model, glm::vec3(0.6f, 0.6f, 0.6f));
-		model = glm::translate(model, glm::vec3(-0.65f, 0.15f, -0.8f));
+		model = glm::translate(model, glm::vec3(-0.55f, 0.15f, -0.8f));
 		model = glm::rotate(model, glm::radians(90.0f), glm::vec3(2.0f, 0.0f, 0.0f));
 		MVP = projection * view * model;
 		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "MVP"), 1, GL_FALSE, &MVP[0][0]);
+		glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 		ball.Draw();
 		
 		// Swap Buffers
@@ -269,6 +442,9 @@ int main()
 	}
 	
 	planeMeshDeletion(planeMesh);
+	cubeMeshDeletion(container);
+	cubeMeshDeletion(lidBottom);
+	cubeMeshDeletion(lidTop);
 	cylinderMeshDeletion(cylinderMesh);
 	cylinderMeshDeletion(cylinderTwoMesh);
 	torusMeshDeletion(torusMesh);
@@ -440,6 +616,10 @@ void planeMeshCreation(PlaneMesh& mesh, int planeDimension) {
 	// Texture
 	glEnableVertexAttribArray(1);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, VERTEX_BYTE_SIZE, (void*)(sizeof(float) * 3));
+
+	// Normal
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, VERTEX_BYTE_SIZE, (void*)(sizeof(float) * 6));
 	
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.vbo);
 }
@@ -452,6 +632,138 @@ void planeRender(PlaneMesh& mesh, unsigned int& shader, glm::mat4 MVP) {
 
 	glBindVertexArray(mesh.vao);
 	glDrawElements(GL_TRIANGLES, mesh.planeNumIndices, GL_UNSIGNED_SHORT, (void*)mesh.planeIndexByteOffset);
+}
+
+// Cube
+void containerMeshCreation(CubeMesh& mesh) {
+	float extend = 0.05f;
+	float vertices[] = {
+		-0.5f, -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,  0.0f, -1.0f,
+		 0.5f, -0.5f, -0.5f, 1.0f,  0.0f, 0.0f,  0.0f, -1.0f,
+		 0.6f + extend, 0.5f, -0.5f - extend, 1.0f,  1.0f, 0.0f,  0.0f, -1.0f,
+		 0.6f + extend, 0.5f, -0.5f - extend, 1.0f,  1.0f, 0.0f,  0.0f, -1.0f,
+		-0.6f - extend, 0.5f, -0.5f - extend, 0.0f,  1.0f, 0.0f,  0.0f, -1.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,  0.0f, -1.0f,
+
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 0.0f,  0.0f,  1.0f,
+		 0.5f, -0.5f,  0.5f, 1.0f,  0.0f, 0.0f,  0.0f,  1.0f,
+		 0.6f + extend,  0.5f,  0.5f + extend, 1.0f,  1.0f, 0.0f,  0.0f,  1.0f,
+		 0.6f + extend,  0.5f,  0.5f + extend, 1.0f,  1.0f, 0.0f,  0.0f,  1.0f,
+		-0.6f - extend,  0.5f,  0.5f + extend, 0.0f,  1.0f, 0.0f,  0.0f,  1.0f,
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 0.0f,  0.0f,  1.0f,
+
+		-0.6f - extend,  0.5f,  0.5f + extend, 1.0f,  0.0f,-1.0f,  0.0f,  0.0f,
+		-0.6f - extend,  0.5f, -0.5f - extend, 1.0f,  1.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f,-1.0f,  0.0f,  0.0f,
+		-0.6f - extend,  0.5f,  0.5f + extend, 1.0f,  0.0f,-1.0f,  0.0f,  0.0f,
+
+		 0.6f + extend,  0.5f,  0.5f + extend, 1.0f,  0.0f, 1.0f,  0.0f,  0.0f,
+		 0.6f + extend,  0.5f, -0.5f - extend, 1.0f,  1.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 1.0f,  0.0f,  0.0f,
+		 0.6f + extend,  0.5f,  0.5f + extend, 1.0f,  0.0f, 1.0f,  0.0f,  0.0f,
+
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, -1.0f,  0.0f,
+		 0.5f, -0.5f, -0.5f, 1.0f,  1.0f, 0.0f, -1.0f,  0.0f,
+		 0.5f, -0.5f,  0.5f, 1.0f,  0.0f, 0.0f, -1.0f,  0.0f,
+		 0.5f, -0.5f,  0.5f, 1.0f,  0.0f, 0.0f, -1.0f,  0.0f,
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, -1.0f,  0.0f,
+
+		-0.6f - extend,  0.5f, -0.5f - extend, 0.0f,  1.0f, 0.0f,  1.0f,  0.0f,
+		 0.6f + extend,  0.5f, -0.5f - extend, 1.0f,  1.0f, 0.0f,  1.0f,  0.0f,
+		 0.6f + extend,  0.5f,  0.5f + extend, 1.0f,  0.0f, 0.0f,  1.0f,  0.0f,
+		 0.6f + extend,  0.5f,  0.5f + extend, 1.0f,  0.0f, 0.0f,  1.0f,  0.0f,
+		-0.6f - extend,  0.5f,  0.5f + extend, 0.0f,  0.0f, 0.0f,  1.0f,  0.0f,
+		-0.6f - extend,  0.5f, -0.5f - extend, 0.0f,  1.0f, 0.0f,  1.0f,  0.0f
+	};
+
+	glGenVertexArrays(1, &mesh.vao);
+	glGenBuffers(1, &mesh.vbo);
+
+	glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+	glBindVertexArray(mesh.vao);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(5 * sizeof(float)));
+	glEnableVertexAttribArray(2);
+}
+void cubeMeshCreation(CubeMesh& mesh){
+	// Vertex Data, Textures and Normals
+	float vertices[] = {
+		-0.5f, -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,  0.0f, -1.0f,
+		 0.5f, -0.5f, -0.5f, 1.0f,  0.0f, 0.0f,  0.0f, -1.0f,
+		 0.5f,  0.5f, -0.5f, 1.0f,  1.0f, 0.0f,  0.0f, -1.0f,
+		 0.5f,  0.5f, -0.5f, 1.0f,  1.0f, 0.0f,  0.0f, -1.0f,
+		-0.5f,  0.5f, -0.5f, 0.0f,  1.0f, 0.0f,  0.0f, -1.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,  0.0f, -1.0f,
+
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 0.0f,  0.0f,  1.0f,
+		 0.5f, -0.5f,  0.5f, 1.0f,  0.0f, 0.0f,  0.0f,  1.0f,
+		 0.5f,  0.5f,  0.5f, 1.0f,  1.0f, 0.0f,  0.0f,  1.0f,
+		 0.5f,  0.5f,  0.5f, 1.0f,  1.0f, 0.0f,  0.0f,  1.0f,
+		-0.5f,  0.5f,  0.5f, 0.0f,  1.0f, 0.0f,  0.0f,  1.0f,
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 0.0f,  0.0f,  1.0f,
+
+		-0.5f,  0.5f,  0.5f, 1.0f,  0.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f,  0.5f, -0.5f, 1.0f,  1.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f,-1.0f,  0.0f,  0.0f,
+		-0.5f,  0.5f,  0.5f, 1.0f,  0.0f,-1.0f,  0.0f,  0.0f,
+
+		 0.5f,  0.5f,  0.5f, 1.0f,  0.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f,  0.5f, -0.5f, 1.0f,  1.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 1.0f,  0.0f,  0.0f,
+		 0.5f,  0.5f,  0.5f, 1.0f,  0.0f, 1.0f,  0.0f,  0.0f,
+
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, -1.0f,  0.0f,
+		 0.5f, -0.5f, -0.5f, 1.0f,  1.0f, 0.0f, -1.0f,  0.0f,
+		 0.5f, -0.5f,  0.5f, 1.0f,  0.0f, 0.0f, -1.0f,  0.0f,
+		 0.5f, -0.5f,  0.5f, 1.0f,  0.0f, 0.0f, -1.0f,  0.0f,
+		-0.5f, -0.5f,  0.5f, 0.0f,  0.0f, 0.0f, -1.0f,  0.0f,
+		-0.5f, -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, -1.0f,  0.0f,
+
+		-0.5f,  0.5f, -0.5f, 0.0f,  1.0f, 0.0f,  1.0f,  0.0f,
+		 0.5f,  0.5f, -0.5f, 1.0f,  1.0f, 0.0f,  1.0f,  0.0f,
+		 0.5f,  0.5f,  0.5f, 1.0f,  0.0f, 0.0f,  1.0f,  0.0f,
+		 0.5f,  0.5f,  0.5f, 1.0f,  0.0f, 0.0f,  1.0f,  0.0f,
+		-0.5f,  0.5f,  0.5f, 0.0f,  0.0f, 0.0f,  1.0f,  0.0f,
+		-0.5f,  0.5f, -0.5f, 0.0f,  1.0f, 0.0f,  1.0f,  0.0f
+	};
+
+	glGenVertexArrays(1, &mesh.vao);
+	glGenBuffers(1, &mesh.vbo);
+
+	glBindBuffer(GL_ARRAY_BUFFER, mesh.vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+	glBindVertexArray(mesh.vao);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(5 * sizeof(float)));
+	glEnableVertexAttribArray(2);
+}
+void cubeMeshDeletion(CubeMesh& mesh){
+	glDeleteVertexArrays(1, &mesh.vao);
+	glDeleteBuffers(1, &mesh.vbo);
+}
+void cubeRender(CubeMesh& mesh, unsigned int& shader, glm::mat4 MVP){
+	glUniformMatrix4fv(glGetUniformLocation(shader, "MVP"), 1, GL_FALSE, glm::value_ptr(MVP));
+
+	glBindVertexArray(mesh.vao);
+	glDrawArrays(GL_TRIANGLES, 0, 36);
 }
 
 // Cylinder Functions
